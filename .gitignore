@@ -1,0 +1,17 @@
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ===== 本次不提交（非「裂变随机行走」主线的其余子项目/文件）=====
+# 若要纳入，删掉对应行即可
+/SCI实验代码库/
+/results/
+/强化学习.py
+/XGBoost*.py
+/原子核质量预测（液滴模型）.py
+/五维势能面内原子核的随机行走（含对比实验）.py
+/binding_energy_data_2020.xlsx
+/binding_energy_fit.png
+/liquid_drop_analysis.png
+/drl_vs_randomwalk.png
