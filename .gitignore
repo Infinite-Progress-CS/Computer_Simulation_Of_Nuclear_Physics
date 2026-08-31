@@ -15,3 +15,6 @@ __pycache__/
 /binding_energy_fit.png
 /liquid_drop_analysis.png
 /drl_vs_randomwalk.png
+
+# ===== 原始 ENDF 下载（体积大 ~51MB、可重新抓取，不提交）=====
+/五维势能面上原子核的随机行走/results/产额分布/data/raw/

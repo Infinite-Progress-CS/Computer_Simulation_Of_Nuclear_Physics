@@ -25,7 +25,7 @@ from metropolis import (metropolis_walk, min_energy_path, neck_fraction,
                         compute_surface_slice)
 from visualize import plot_shape_schematic, plot_pes_slice, animate_split
 
-BASE_DIR = os.path.join(PROJECT_ROOT, "output")
+BASE_DIR = os.path.join(PROJECT_ROOT, "results", "随机行走", "figures")
 Z, N = 92, 144   # U-236
 
 

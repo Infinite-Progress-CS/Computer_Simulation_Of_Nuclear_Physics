@@ -13,6 +13,72 @@ import numpy as np
 from scipy import integrate, optimize
 
 
+def spheroid_axes(eps):
+    """Nilsson 四极形变 ε → 无量纲半轴 (a, c)，体积守恒 a²c = 1。
+
+    a = 垂直轴，c = 对称轴。ε>0 → 长椭球 (prolate, c>a)；ε<0 → 扁椭球 (oblate)。
+    """
+    r = (3.0 - 2.0 * eps) / (3.0 + eps)   # a/c
+    return r ** (1.0 / 3.0), r ** (-2.0 / 3.0)
+
+
+def spheroid_bs_bc(eps):
+    """均匀带电/表面能椭球的形变函数 (B_s, B_c)，球 = 1。
+
+    长椭球 (prolate, eps>0) 精确公式：
+      e   = √(1 − r²)，r = a/c
+      B_s = (1/2) r^{2/3} [1 + arcsin(e)/(e r)]
+      B_c = r^{2/3} · ln((1+e)/(1−e)) / (2e)
+    e→0 时用级数展开消去 0/0。扁椭球 (eps<0) 用对应 arcsinh/arctan 公式。
+    """
+    r = (3.0 - 2.0 * eps) / (3.0 + eps)
+    r23 = r ** (2.0 / 3.0)
+    if eps >= 0.0:
+        e2 = 1.0 - r * r
+        if e2 <= 0.0:
+            return 1.0, 1.0
+        e = np.sqrt(e2)
+        if e < 1e-6:
+            asin_e = 1.0 + e * e / 6.0
+            ln_e = 1.0 + e * e / 3.0
+        else:
+            asin_e = np.arcsin(e) / e
+            ln_e = np.log((1.0 + e) / (1.0 - e)) / (2.0 * e)
+        Bs = 0.5 * r23 * (1.0 + asin_e / r)
+        Bc = r23 * ln_e
+    else:
+        e2 = r * r - 1.0
+        if e2 <= 0.0:
+            return 1.0, 1.0
+        e = np.sqrt(e2)
+        if e < 1e-6:
+            asinh_e = 1.0 - e * e / 6.0
+            atan_e = 1.0 - e * e / 3.0
+        else:
+            asinh_e = np.arcsinh(e) / e
+            atan_e = np.arctan(e) / e
+        Bs = 0.5 * r23 * (1.0 + asinh_e / r)
+        Bc = r23 * atan_e
+    return float(Bs), float(Bc)
+
+
+class ShapeSpheroid:
+    """单中心椭球形状 ρ(z)（碎片形变用），接口与 Shape3QS 一致。
+
+    profile([eps], n) → (z, ρ)，单位 fm。体积守恒（a²c = R0³）。
+    """
+
+    def __init__(self, R0=7.17):
+        self.R0 = R0
+
+    def profile(self, q, n=300):
+        eps = float(np.asarray(q).ravel()[0])
+        a, c = spheroid_axes(eps)
+        z_d = np.linspace(-c, c, n)
+        rho_d = a * np.sqrt(np.maximum(1.0 - (z_d / c) ** 2, 0.0))
+        return z_d * self.R0, rho_d * self.R0
+
+
 class Shape3QS:
     """轴对称形状 ρ(z)，由 5 个物理参数 (elong, neck, eta, eps1, eps2) 描述。
 

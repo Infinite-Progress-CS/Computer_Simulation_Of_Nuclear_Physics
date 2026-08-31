@@ -28,7 +28,7 @@ class MacroMicro:
     """
 
     def __init__(self, Z, N, nz=60, nrho=60, nsurf=64, nphi=40,
-                 Nmax=12, gamma_fac=0.9, p=6, g0_n=16.0, g0_p=16.0,
+                 Nmax=12, gamma_fac=1.1, p=4, g0_n=16.0, g0_p=16.0,
                  pair_window=6.0):
         self.Z, self.N = Z, N
         self.A = Z + N

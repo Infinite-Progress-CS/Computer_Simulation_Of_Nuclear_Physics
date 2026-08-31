@@ -35,7 +35,8 @@ WS_DEFAULTS = dict(
     kappa=0.86,     # 同位旋不对称系数
     r0=1.275,       # fm 半径参数
     a=0.70,         # fm 弥散度
-    lam_so=35.0,    # 自旋轨道强度（无量纲）
+    lam_so=35.0,    # 自旋轨道强度（中子，无量纲）
+    lam_so_p=None,  # 质子自旋轨道强度（None = 用 lam_so，即无同位旋依赖）
     r0_coul=1.16,   # fm 电荷半径参数
 )
 
@@ -123,7 +124,7 @@ class WoodsSaxon:
     """
 
     def __init__(self, Z, N, Nmax=12, nz_gauss=40, nrho_gauss=32, nsurf=600,
-                 grad_step=0.15, params=None):
+                 grad_step=0.15, params=None, shape=None):
         self.Z, self.N = Z, N
         self.A = Z + N
         self.I = (N - Z) / self.A
@@ -135,7 +136,9 @@ class WoodsSaxon:
         self.a = p["a"]                 # fm 弥散度
         self.R_ws = p["r0"] * self.A ** (1.0 / 3.0)
         self.R_c = p["r0_coul"] * self.A ** (1.0 / 3.0)
-        self.S = p["lam_so"] * (HBARC / (2.0 * M_NUC)) ** 2   # 自旋轨道强度 fm²
+        lam_so_p = p["lam_so"] if p.get("lam_so_p") is None else p["lam_so_p"]
+        self.S = p["lam_so"] * (HBARC / (2.0 * M_NUC)) ** 2       # 中子自旋轨道强度 fm²
+        self.S_p = lam_so_p * (HBARC / (2.0 * M_NUC)) ** 2        # 质子自旋轨道强度 fm²
         self.Nmax = Nmax
         self.nsurf = nsurf
         self.grad_step = grad_step
@@ -144,7 +147,7 @@ class WoodsSaxon:
         self.hbar_omega = 41.0 / self.A ** (1.0 / 3.0)   # MeV
         self.b = math.sqrt(HBARC ** 2 / (M_NUC * self.hbar_omega))  # fm
 
-        self.shape = Shape3QS(self.R_ws)
+        self.shape = shape if shape is not None else Shape3QS(self.R_ws)
 
         # 谐振子基的（Ω,π）块标签：预生成 Ω 列表
         self._omega_list = [i + 0.5 for i in range(Nmax + 1)]  # 1/2,3/2,...,Nmax+1/2
@@ -309,8 +312,8 @@ class WoodsSaxon:
                     Vn_rr=Vn_rr, Vp_rr=Vp_rr)
 
     # ---- 组装并对角化一个 (Ω, π) 块 ----
-    def _solve_block(self, Omega, parity, fields, Vr, Vz, Vrr):
-        """fields 字典包含 Vn/Vp 中心势；Vr/Vz/Vrr 为该核子的梯度场。"""
+    def _solve_block(self, Omega, parity, fields, Vr, Vz, Vrr, S):
+        """fields 字典包含 Vn/Vp 中心势；Vr/Vz/Vrr 为该核子的梯度场；S 为该核子自旋轨道强度。"""
         Lam_a = int(Omega - 0.5)
         Lam_b = int(Omega + 0.5)
         Nmax = self.Nmax
@@ -381,8 +384,8 @@ class WoodsSaxon:
             return coef * np.einsum('ipj,ipk,jk->ip', ZZ, PP, B)
 
         # 对角自旋轨道：V_so^diag = −S·(dV/dρ)/ρ·2ΛΣ；Σ=+1/2 → −SΛ，Σ=−1/2 → +SΛ
-        Ha += so_diag(st_a, Pa, Lam_a, -self.S * Lam_a)
-        Hb += so_diag(st_b, Pb, Lam_b, +self.S * Lam_b)
+        Ha += so_diag(st_a, Pa, Lam_a, -S * Lam_a)
+        Hb += so_diag(st_b, Pb, Lam_b, +S * Lam_b)
 
         # 自旋轨道耦合项（l_-σ_+ 部分，微分作用于 Λ_b 分支）：
         #   ⟨a|V_so|b⟩ = S [Λ_b⟨Vz/ρ⟩ + ⟨V_z(∂_ρ R_b)R_a⟩ − ⟨V_ρ(∂_z Z_b)Z_a⟩]
@@ -407,7 +410,7 @@ class WoodsSaxon:
                     M = np.einsum('j,k,jk->', ZM[a_i, b_i, :], Pa_row * Pb_row, MV)
                     Xterm = np.einsum('j,k,jk->', ZM[a_i, b_i, :], Pa_row * Db_row, XV)
                     Yterm = np.einsum('j,k,jk->', ZY[a_i, b_i, :], Pa_row * Pb_row, YV)
-                    Hab[a_i, b_i] = self.S * (Lam_b * M + Xterm - Yterm)
+                    Hab[a_i, b_i] = S * (Lam_b * M + Xterm - Yterm)
 
         # 组装
         H[:n_a, :n_a] = Ha
@@ -455,9 +458,9 @@ class WoodsSaxon:
                     Vn_r, Vn_z, Vn_rr = f["dVn_drho"], f["dVn_dz"], f["Vn_rr"]
                     Vp_r, Vp_z, Vp_rr = f["dVp_drho"], f["dVp_dz"], f["Vp_rr"]
                 n_levels.extend(self._solve_block(
-                    Omega, parity, fields_n["Vn"], Vn_r, Vn_z, Vn_rr))
+                    Omega, parity, fields_n["Vn"], Vn_r, Vn_z, Vn_rr, self.S))
                 p_levels.extend(self._solve_block(
-                    Omega, parity, fields_p["Vp"], Vp_r, Vp_z, Vp_rr))
+                    Omega, parity, fields_p["Vp"], Vp_r, Vp_z, Vp_rr, self.S_p))
         p_levels = np.sort(np.asarray(p_levels))
         n_levels = np.sort(np.asarray(n_levels))
         return p_levels, n_levels

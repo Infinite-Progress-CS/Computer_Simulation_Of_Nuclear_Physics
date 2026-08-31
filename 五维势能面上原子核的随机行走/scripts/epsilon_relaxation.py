@@ -27,7 +27,7 @@ from metropolis import min_energy_path
 
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-BASE_DIR = os.path.join(PROJECT_ROOT, "output")
+BASE_DIR = os.path.join(PROJECT_ROOT, "results", "随机行走", "figures")
 
 Z, N = 92, 144   # U-236
 

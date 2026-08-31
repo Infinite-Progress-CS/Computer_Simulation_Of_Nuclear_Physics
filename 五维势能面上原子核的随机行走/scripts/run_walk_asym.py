@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
 from macro_micro import MacroMicro
 from metropolis import metropolis_walk, neck_fraction
 
-BASE_DIR = os.path.join(PROJECT_ROOT, "output")
+BASE_DIR = os.path.join(PROJECT_ROOT, "results", "随机行走", "figures")
 Z, N = 92, 144   # U-236
 
 
