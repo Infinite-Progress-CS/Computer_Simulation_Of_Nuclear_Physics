@@ -16,5 +16,6 @@ __pycache__/
 /liquid_drop_analysis.png
 /drl_vs_randomwalk.png
 
-# ===== 原始 ENDF 下载（体积大 ~51MB、可重新抓取，不提交）=====
-/五维势能面上原子核的随机行走/results/产额分布/data/raw/
+# ===== 实验结果（数据/图表/GIF/PDF，可重新生成，不入库）=====
+/五维势能面上原子核的随机行走/results/
+/五维势能面上原子核的随机行走/五维势能面上原子核的随机行走.pdf
