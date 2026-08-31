@@ -12,14 +12,13 @@ results/
 │   │   ├── computed_charge_yield.csv           计算电荷产额 Y(Z)
 │   │   ├── most_probable_charge.csv            最可几电荷 Z_p(A)
 │   │   └── raw/                ← 原始 ENDF 下载（.dat/.zip，共 ~53MB，可重新抓取，可删）
-│   └── figures/               ← 产额图（7 张 PNG）
+│   └── figures/               ← 产额图（6 张 PNG）
 │       ├── mass_yield_multiT.png        多温度 Y(A) 曲线
 │       ├── charge_yield.png             电荷产额 Y(Z)
 │       ├── shell_correction_vs_A.png    壳修正随 A（诊断双峰来源）
 │       ├── compare_mass_yield.png       计算 vs 实验叠图（线性轴）
 │       ├── compare_mass_yield_log.png   计算 vs 实验叠图（对数轴）
-│       ├── mass_yield.png               质量产额
-│       └── 裂变碎片产额分布.png          产额分布示意图
+│       └── 裂变碎片产额分布.png          计算 vs 实验（断裂点模型主图，线性轴，标注双峰/谷）
 └── 随机行走/                  ← 上一次实验：5D 随机行走里程碑 1（2D 对称验证）
     └── figures/               ← 随机行走图（8 张 PNG/GIF）
         ├── 对称路径宏观微观势垒.png

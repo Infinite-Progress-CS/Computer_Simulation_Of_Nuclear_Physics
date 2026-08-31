@@ -16,6 +16,7 @@
 import os
 import sys
 import csv
+import re
 import argparse
 
 import numpy as np
@@ -140,6 +141,9 @@ def main():
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
     # 线性轴
     fig, ax = plt.subplots(figsize=(7, 4.5))
     ax.plot(A_exp, Y_exp, 'o-', ms=3, lw=1, color='gray', label='ENDF (post-n, raw)')
@@ -169,6 +173,31 @@ def main():
     ax.grid(alpha=0.3, which='both')
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, 'compare_mass_yield_log.png'), dpi=160)
+    plt.close(fig)
+
+    # 主交付图：裂变碎片产额分布（计算 vs 对称化实验，线性轴，标注双峰/谷）
+    m = re.search(r'T([\d.]+)\.csv', os.path.basename(calc_path))
+    T_label = m.group(1) if m else '?'
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(A_calc, Y_calc, '-', lw=2.2, color='tab:blue',
+            label=f'断裂点模型 (T={T_label} MeV)')
+    ax.plot(A_exp, Y_exp_sym, 'o-', ms=3.5, lw=1.1, color='k',
+            label='实验 ENDF（对称化初级）')
+    ax.plot([pc[0], pc[2]], [pc[1], pc[3]], 'v', ms=10, color='tab:blue', mec='k')
+    ax.plot(pc[4], pc[5], '^', ms=10, color='tab:red', mec='k')
+    ax.annotate(f'轻峰 A={pc[0]}', (pc[0], pc[1]), xytext=(pc[0] - 24, pc[1] + 1.0),
+                fontsize=9, color='tab:blue', arrowprops=dict(arrowstyle='-', color='tab:blue', lw=0.6))
+    ax.annotate(f'重峰 A={pc[2]}', (pc[2], pc[3]), xytext=(pc[2] - 4, pc[3] + 1.0),
+                fontsize=9, color='tab:blue', arrowprops=dict(arrowstyle='-', color='tab:blue', lw=0.6))
+    ax.annotate(f'对称谷 A={pc[4]}', (pc[4], pc[5]), xytext=(pc[4] - 30, pc[5] * 6),
+                fontsize=9, color='tab:red', arrowprops=dict(arrowstyle='-', color='tab:red', lw=0.6))
+    ax.set_xlabel('A（质量数）')
+    ax.set_ylabel('Y(A)（%）')
+    ax.set_title('U-236 裂变碎片质量产额分布：断裂点模型 vs 实验')
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, '裂变碎片产额分布.png'), dpi=160)
     plt.close(fig)
 
     print('对比图已写出到 output/compare_mass_yield.png 与 compare_mass_yield_log.png')
