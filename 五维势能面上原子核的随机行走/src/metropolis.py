@@ -22,8 +22,9 @@ def metropolis_walk(pes, q0, T=6.0, n_steps=500, T_end=None, ratchet_elong=None,
         （沉降到断裂点）。默认 None = 恒温。
       - 若未给 ratchet_elong：全程线性退火 T → T_end。
 
-    ratchet_elong：一旦 elong 超过该值（越过主势垒），elong 只增不减，
-    模拟裂变断裂的不可逆性，强制行走沿谷底滚落到断裂点。
+    ratchet_elong：一旦 elong 超过该值（越过主势垒），elong 不低于该值
+    （可在 [ratchet_elong, q_max] 内回落再松弛，但不退回鞍点内），
+    模拟裂变断裂的不可逆性，强制行走停留在断裂侧并沿谷底滚落到断裂点。
     （3QS 中细颈与碎片分离被解耦，产生一个假的颈部过渡势垒，棘轮用于跨越它。）
 
     返回：path (n+1,5)、energies (n+1,)、components (n+1,2)=[表面项,库仑项]、接受率。
@@ -53,18 +54,28 @@ def metropolis_walk(pes, q0, T=6.0, n_steps=500, T_end=None, ratchet_elong=None,
         if T_end is None:
             T_i = T
         elif ratchet_elong is not None and committed:
-            # 两段式：越障前恒温 T，越障后从 T 冷却到 T_end
+            # 两段式：越障前恒温 T，越障后几何冷却到 T_end（核冷却近似指数）
             frac = (i - i_commit) / max(n_steps - i_commit, 1)
-            T_i = T + (T_end - T) * frac
+            T_i = T * (T_end / T) ** frac
         else:
             T_i = T + (T_end - T) * (i / n_steps)
         q_new = np.clip(q + step * rng.standard_normal(5), q_min, q_max)
         if committed:
-            q_new[0] = max(q_new[0], q[0])   # 裂变不可逆：elong 只增不减
+            # 裂变不可逆：elong 不低于棘轮值（允许在 [ratchet_elong, q_max] 内回落再松弛，
+            # 避免单调推进把 elong 一下怼到 3.0，颈/η/ε 来不及松弛）。
+            q_new[0] = max(q_new[0], ratchet_elong)
         try:
             V_new, dV_s_new, dV_c_new, _, _ = pes.energy_components(q_new)
         except Exception:
-            V_new = np.inf
+            # 3QS 非对称形状在颈未形成时无解（"非对称无解"）。退回对称投影
+            # （η=ε1=ε2=0，保留提议的 elong/neck）再试；仍无解（深颈+小拉长）才拒绝。
+            q_sym = q_new.copy()
+            q_sym[2:] = 0.0
+            try:
+                V_new, dV_s_new, dV_c_new, _, _ = pes.energy_components(q_sym)
+                q_new = q_sym
+            except Exception:
+                V_new = np.inf
         dE = V_new - V
         if V_new < np.inf and (dE <= 0 or rng.random() < np.exp(-dE / T_i)):
             q, V, dV_s, dV_c = q_new, V_new, dV_s_new, dV_c_new

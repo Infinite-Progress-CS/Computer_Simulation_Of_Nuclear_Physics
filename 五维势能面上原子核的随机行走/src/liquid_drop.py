@@ -22,7 +22,7 @@ class FRLDMPES:
     """
 
     def __init__(self, Z, N, r0=1.16, a_s=21.18466, kappa_s=2.345, a_range=0.68,
-                 nz=30, nrho=30, nsurf=40, nphi=24):
+                 nz=48, nrho=48, nsurf=56, nphi=36, richardson=True):
         self.Z, self.N = Z, N
         self.A = Z + N
         self.R0 = r0 * self.A ** (1.0 / 3.0)
@@ -31,15 +31,24 @@ class FRLDMPES:
         self.E_C0 = (3.0 / 5.0) * Z * Z * 1.44 / self.R0
         self.a = a_range / self.R0          # 无量纲有限力程
         self.shape = Shape3QS(self.R0)
-        self.nz, self.nrho = nz, nrho       # 库仑积分网格
+        self.nz, self.nrho = nz, nrho       # 库仑积分网格（细）
         self.nsurf, self.nphi = nsurf, nphi  # 表面能积分网格
+        self.richardson = richardson
         self._sphere = self.shape.build([0.0, 0.0, 0.0, 0.0, 0.0])
-        self.I_C_sphere = self._coulomb_I(self._sphere)
+        self.I_C_sphere = self._coulomb_I_conv(self._sphere)
         self.I_S_sphere = self._surface_I(self._sphere)
 
     # ---- 库仑（尖表面，方位角解析 ellipk）----
-    def _coulomb_I(self, d):
-        nz, nrho = self.nz, self.nrho
+    def _coulomb_I(self, d, nz=None, nrho=None):
+        """四重库仑积分 I_C = Σ_{i,j,k,l} w_i w_j w_k w_l · 2π r1 r2 · 4K/√(aa+b)。
+
+        分块累加（沿外层 z 索引 i 循环）：峰值内存从 O(nz²·nρ²) 降到 O(nz·nρ²)，
+        允许细网格（48×48 及以上）而不会爆 4D 数组内存。
+        """
+        if nz is None:
+            nz = self.nz
+        if nrho is None:
+            nrho = self.nrho
         zL, zR, rho2 = d["zL"], d["zR"], d["rho2"]
         xz, wz = np.polynomial.legendre.leggauss(nz)
         xr, wr = np.polynomial.legendre.leggauss(nrho)
@@ -48,18 +57,43 @@ class FRLDMPES:
         Rz = np.sqrt(np.maximum(rho2(z), 0.0))
         rho = Rz[:, None] * (xr[None, :] + 1.0) * 0.5
         w_rho = wr[None, :] * Rz[:, None] * 0.5
-        zz = (z[:, None, None, None] - z[None, None, :, None]) ** 2
-        r1 = rho[:, :, None, None]
-        r2 = rho[None, None, :, :]
-        aa = zz + r1 ** 2 + r2 ** 2
-        b = 2.0 * r1 * r2
-        apb = np.maximum(aa + b, 1e-14)
-        m = np.clip(2.0 * b / apb, 0.0, 1.0 - 1e-12)
-        K = special.ellipk(m)
-        total_w = (wz_full[:, None, None, None] * w_rho[:, :, None, None]
-                   * wz_full[None, None, :, None] * w_rho[None, None, :, :])
-        integrand = 2.0 * np.pi * r1 * r2 * 4.0 * K / np.sqrt(apb)
-        return np.sum(total_w * integrand)
+        rho_sq = rho ** 2
+
+        total = 0.0
+        for i in range(nz):
+            wi = wz_full[i]
+            ri = rho[i]                       # (nrho,)
+            ri2 = ri ** 2
+            zz_i = (z[i] - z) ** 2            # (nz,)
+            # aa[j,k,l] = (zi−zk)² + ri[j]² + rho[k,l]²  → (nrho, nz, nrho)
+            aa = (zz_i[None, :, None] + ri2[:, None, None]
+                  + rho_sq[None, :, :])
+            b = 2.0 * ri[:, None, None] * rho[None, :, :]     # (nrho, nz, nrho)
+            apb = np.maximum(aa + b, 1e-14)
+            m = np.clip(2.0 * b / apb, 0.0, 1.0 - 1e-12)
+            K = special.ellipk(m)
+            integrand = (2.0 * np.pi * ri[:, None, None]
+                         * rho[None, :, :] * 4.0 * K / np.sqrt(apb))
+            total_w = (w_rho[i][:, None, None] * wz_full[None, :, None]
+                       * w_rho[None, :, :])
+            total += wi * np.sum(total_w * integrand)
+        return total
+
+    def _coulomb_I_conv(self, d):
+        """Richardson 外推的库仑积分，消除 4 重积分的对数奇点慢收敛。
+
+        ellipk(m) 在 m→1（两体积元重合）处有对数奇点，Gauss-Legendre 误差 ~1/n²
+        （实测 n=32/48/64 误差 +2.99/+1.32/+0.73 MeV）。用 n_hi 与 n_lo=round(2/3·n_hi)
+        两套网格按 1/n² 外推，误差压到 ~0.02 MeV，代价仅 +20%。
+        """
+        if not self.richardson:
+            return self._coulomb_I(d)
+        n_hi = self.nz
+        n_lo = max(20, int(round(n_hi * 2.0 / 3.0)))
+        I_hi = self._coulomb_I(d, n_hi, n_hi)
+        I_lo = self._coulomb_I(d, n_lo, n_lo)
+        r = (n_hi / n_lo) ** 2
+        return I_hi + (I_hi - I_lo) / (r - 1.0)
 
     # ---- 有限力程表面能（KNS 双重曲面积分）----
     def _surface_I(self, d):
@@ -99,12 +133,12 @@ class FRLDMPES:
         return self._surface_I(self.shape.build(q)) / self.I_S_sphere
 
     def B_c(self, q):
-        return self._coulomb_I(self.shape.build(q)) / self.I_C_sphere
+        return self._coulomb_I_conv(self.shape.build(q)) / self.I_C_sphere
 
     def energy_components(self, q):
         d = self.shape.build(q)
         B_s = self._surface_I(d) / self.I_S_sphere
-        B_c = self._coulomb_I(d) / self.I_C_sphere
+        B_c = self._coulomb_I_conv(d) / self.I_C_sphere
         dV_s = self.E_S0 * (B_s - 1.0)
         dV_c = self.E_C0 * (B_c - 1.0)
         return dV_s + dV_c, dV_s, dV_c, B_s, B_c

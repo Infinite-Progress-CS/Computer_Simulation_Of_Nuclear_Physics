@@ -58,6 +58,28 @@ def _Fp(v, p):
     return np.interp(v, _XG, F)
 
 
+# ----------------------------------------------------------------------
+# G_p(v) = ∫_{−∞}^{v} x f_p(x) dx —— Strutinsky 能量形式的平滑能量修正项。
+# 平滑能量 ∫ ε g̃(ε) dε = Σ ε_i F_p(v_i) + γ Σ G_p(v_i)，第二项是「能量定理」
+# 的关键修正（Brack & Pauli 1973）。缺此项 → 壳修正随 γ 单调漂移、无平台。
+# ----------------------------------------------------------------------
+_G_CACHE = {}
+
+
+def _g_table(p):
+    f = smoothing_kernel(_XG, p)
+    G = np.cumsum(_XG * f) * (_XG[1] - _XG[0])
+    return G - G[0]
+
+
+def _Gp(v, p):
+    if p not in _G_CACHE:
+        _G_CACHE[p] = _g_table(p)
+    G = _G_CACHE[p]
+    v = np.clip(np.asarray(v, dtype=float), -_XMAX, _XMAX)
+    return np.interp(v, _XG, G)
+
+
 def shell_correction(levels, n_particles, gamma, p=4, degeneracy=2):
     """计算壳修正 δE_壳（MeV）。返回 (δE_壳, 平滑费米能 λ̃)。
 
@@ -91,7 +113,8 @@ def shell_correction(levels, n_particles, gamma, p=4, degeneracy=2):
     lam_tilde = 0.5 * (lo + hi)
 
     # 平滑占据数 w_i = F_p((λ̃−ε_i)/γ)
-    w = _Fp((lam_tilde - levels) / gamma, p)
+    v = (lam_tilde - levels) / gamma
+    w = _Fp(v, p)
 
     # 壳修正 = 占据能之和 − 平滑能之和（能级求和，数值稳定）。
     # 奇核正确处理半满轨道：满占据前 n_full 个轨道，半满轨道只加 n_extra 个粒子。
@@ -99,6 +122,9 @@ def shell_correction(levels, n_particles, gamma, p=4, degeneracy=2):
     if n_extra > 0:
         E_occ += n_extra * levels[n_full]
     E_smooth = degeneracy * np.sum(levels * w)
+    # 能量形式补项：∫ ε g̃ dε = Σ ε_i ñ_i + γ Σ G_p(v_i)。
+    # 缺此项则壳修正随 γ 单调漂移（无 Strutinsky 平台）。
+    E_smooth += degeneracy * gamma * np.sum(_Gp(v, p))
     return float(E_occ - E_smooth), float(lam_tilde)
 
 

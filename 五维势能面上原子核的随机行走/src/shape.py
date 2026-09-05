@@ -116,7 +116,16 @@ class Shape3QS:
         c1 = (w1 / r1 ** 2) ** (1.0 / 3.0); a1 = r1 * c1
         c2 = (w2 / r2 ** 2) ** (1.0 / 3.0); a2 = r2 * c2
         l1 = -elong / 2.0; l2 = +elong / 2.0
-        rho_v = neck * min(a1, a2)
+        # Nix 式 neck：rho_v = neck * rho_v_max，rho_v_max 是「平滑无颈」极限颈半径。
+        # 对称情形 rho_v_max = a·sqrt(1 + (elong/2)/c)。neck=1 → 光滑椭球（C<0 鼓包），
+        # neck<1 → 颈缩（双曲面 C>0），neck→0 → 断裂。
+        # 旧实现 neck∈(0,1] 取 rho_v=neck·min(a1,a2)，颈半径永远≤碎片短半轴 a，
+        # 只能造胶囊(圆柱 C=0)或颈缩(C>0)，漏掉 C<0 鼓包段 → 液滴鞍点被抬到 ~13 MeV。
+        l_half = elong / 2.0
+        a_avg = (a1 + a2) / 2.0
+        c_avg = (c1 + c2) / 2.0
+        rho_v_max = a_avg * np.sqrt(max(1.0 + l_half / c_avg, 0.0))
+        rho_v = neck * rho_v_max
 
         # 近球极限：直接返回单位球
         if elong < 1e-6 and abs(eta) < 1e-9 and abs(eps1) < 1e-9 and abs(eps2) < 1e-9:
