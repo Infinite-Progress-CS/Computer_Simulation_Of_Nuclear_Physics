@@ -56,7 +56,7 @@ def gaussian_smooth(Z, Y, sigma):
 
 
 def main():
-    T = 4.50
+    T = 2.00
     exp_path = os.path.join(DATA, 'ENDF_U235_cumulative_yield.csv')
     calc_path = os.path.join(DATA, f'computed_charge_yield_T{T:.2f}.csv')
     if not os.path.exists(calc_path):
@@ -66,7 +66,7 @@ def main():
     Ze, Ye = exp_charge_yield(exp_path)
     Zc, Yc = load_calc_yz(calc_path)
     # 计算曲线做高斯电荷弥散展宽，洗掉壳修正的奇偶锯齿
-    sigma_z = 0.75
+    sigma_z = 0.5
     Zc, Yc = gaussian_smooth(Zc, Yc, sigma_z)
 
     fig, ax = plt.subplots(figsize=(7, 4.8))

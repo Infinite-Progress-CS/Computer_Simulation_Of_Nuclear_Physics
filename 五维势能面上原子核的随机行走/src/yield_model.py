@@ -18,7 +18,7 @@ yield_model.py — 遍历碎片质量，得到产额分布 Y(A)、Y(Z)
 import numpy as np
 
 from fragment import Fragment
-from scission import scission_energy
+from scission import scission_energy, scission_energy_fixed_deformed
 
 
 def ucd_charge(A_L, Z_parent=92, A_parent=236):
@@ -36,7 +36,7 @@ class YieldModel:
 
     def __init__(self, Z_parent=92, N_parent=144, T=1.0, d_extra=2.0,
                  A_min=70, A_max=166, Nmax=12, a_sym=23.5, lam_so_p=None,
-                 lam_so_n=None):
+                 lam_so_n=None, eps_scission=None, T_d_sh=1.2, T_d_pair=0.5):
         self.Z_parent, self.N_parent = Z_parent, N_parent
         self.A_parent = Z_parent + N_parent
         self.T = T
@@ -46,6 +46,12 @@ class YieldModel:
         self.a_sym = a_sym
         self.lam_so_p = lam_so_p
         self.lam_so_n = lam_so_n
+        # 固定断裂形变 (ε_L, ε_H)；None=自由基态极小化（旧行为）。物理断裂点碎片被
+        # 库仑拉伸到 ε_H≈0.6（重）、ε_L≈0.4（轻），球形幻数被洗掉、变形壳定峰位。
+        self.eps_scission = eps_scission
+        # 温度阻尼尺度：壳修正 T_d_sh≈ħω0/2π、对修正 T_d_pair≈0.57Δ。
+        self.T_d_sh = T_d_sh
+        self.T_d_pair = T_d_pair
         self._frag_cache = {}
 
     def _fragment(self, Z, N):
@@ -58,10 +64,10 @@ class YieldModel:
                                              lam_so_n=self.lam_so_n)
         return self._frag_cache[key]
 
-    def scission_energy(self, Z_L, N_L):
-        """给定轻碎片 (Z_L, N_L)，返回断裂点势能 V_scission（MeV）。
+    def scission_energy(self, Z_L, N_L, T=0.0):
+        """给定轻碎片 (Z_L, N_L) 与温度 T，返回断裂点势能 V_scission（MeV）。
 
-        重碎片为互补 (Z_H=Z_p−Z_L, N_H=N_p−N_L)。
+        重碎片为互补 (Z_H=Z_p−Z_L, N_H=N_p−N_L)。T>0 时壳/对修正按温度阻尼。
         """
         A_L = Z_L + N_L
         Z_H = self.Z_parent - Z_L
@@ -69,7 +75,13 @@ class YieldModel:
         N_H = A_H - Z_H
         frag_L = self._fragment(Z_L, N_L)
         frag_H = self._fragment(Z_H, N_H)
-        return scission_energy(frag_L, frag_H, d_extra=self.d_extra)
+        if self.eps_scission is None:
+            return scission_energy(frag_L, frag_H, d_extra=self.d_extra)
+        eps_L, eps_H = self.eps_scission
+        return scission_energy_fixed_deformed(frag_L, frag_H, eps_L, eps_H,
+                                              d_extra=self.d_extra, T=T,
+                                              T_d_sh=self.T_d_sh,
+                                              T_d_pair=self.T_d_pair)
 
     def scission_energy_for_A(self, A_L, Z_L=None):
         """给定轻碎片质量 A_L（默认 UCD 定 Z），返回 V_scission（MeV）。"""
@@ -78,8 +90,8 @@ class YieldModel:
         return self.scission_energy(Z_L, A_L - Z_L)
 
     # ---- 全部 (A,Z) 断裂点势能（供产额/电荷产额共用，避免重复对角化）----
-    def _all_scission_energies(self, z_window=4):
-        """返回 (A 数组, [(Z 数组, V 数组) per A])，V 为断裂点势能（MeV）。
+    def _all_scission_energies(self, z_window=4, T=0.0):
+        """返回 (A 数组, [(Z 数组, V 数组) per A])，V 为温度 T 下的断裂点势能（MeV）。
 
         对每个轻碎片质量 A_L，在 UCD ± z_window 内扫描 Z_L，记录 V_scission。
         """
@@ -93,7 +105,7 @@ class YieldModel:
                 if not (1 <= Z_L < self.Z_parent and 1 <= N_L < self.N_parent):
                     continue
                 Zs.append(Z_L)
-                Vs.append(self.scission_energy(Z_L, N_L))
+                Vs.append(self.scission_energy(Z_L, N_L, T=T))
             V_list.append((np.asarray(Zs, dtype=int), np.asarray(Vs, dtype=float)))
         return A_arr, V_list
 
@@ -105,7 +117,7 @@ class YieldModel:
         归一化时全局减最小 V（断裂势能含 ~2000 MeV 的碎片体积能常量，直接
         exp(−V/T) 会下溢；减常量不影响产额形状）。
         """
-        A_arr, V_list = self._all_scission_energies(z_window)
+        A_arr, V_list = self._all_scission_energies(z_window, T=self.T)
         V_min = min(Vs.min() for _, Vs in V_list if len(Vs))
         Y = np.array([np.exp(-(Vs - V_min) / self.T).sum() for _, Vs in V_list])
         Y = 200.0 * Y / Y.sum()

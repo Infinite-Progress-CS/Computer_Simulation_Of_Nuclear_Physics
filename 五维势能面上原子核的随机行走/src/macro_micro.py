@@ -15,8 +15,10 @@ import numpy as np
 
 from liquid_drop import FRLDMPES
 from woods_saxon import WoodsSaxon
+from two_center import TwoCenterWoodsSaxon
 from strutinsky import shell_correction
 from pairing import pairing_correction
+from shape import Shape3QS
 
 
 class MacroMicro:
@@ -29,11 +31,27 @@ class MacroMicro:
 
     def __init__(self, Z, N, nz=60, nrho=60, nsurf=64, nphi=40,
                  Nmax=12, gamma_fac=1.1, p=4, g0_n=16.0, g0_p=16.0,
-                 pair_window=6.0):
+                 pair_window=6.0, shape_cls=Shape3QS,
+                 lam_so_p=None, lam_so_n=None, basis='single',
+                 nz_uni=48):
         self.Z, self.N = Z, N
         self.A = Z + N
-        self.ld = FRLDMPES(Z, N, nz=nz, nrho=nrho, nsurf=nsurf, nphi=nphi)
-        self.ws = WoodsSaxon(Z, N, Nmax=Nmax)
+        self.ld = FRLDMPES(Z, N, nz=nz, nrho=nrho, nsurf=nsurf, nphi=nphi,
+                           shape_cls=shape_cls)
+        params = {}
+        if lam_so_p is not None:
+            params['lam_so_p'] = lam_so_p
+        if lam_so_n is not None:
+            params['lam_so'] = lam_so_n
+        if basis == 'two_center':
+            self.ws = TwoCenterWoodsSaxon(Z, N, Nmax=Nmax, shape_cls=shape_cls,
+                                          nz_uni=nz_uni, params=params or None)
+        else:
+            self.ws = WoodsSaxon(Z, N, Nmax=Nmax, shape_cls=shape_cls,
+                                 params=params or None)
+        self.lam_so_p = lam_so_p
+        self.lam_so_n = lam_so_n
+        self.basis = basis
         self.shape = self.ld.shape
         self.R0 = self.ld.R0
 

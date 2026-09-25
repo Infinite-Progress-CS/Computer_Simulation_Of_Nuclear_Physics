@@ -107,10 +107,18 @@ class Fragment:
         Bs, Bc = spheroid_bs_bc(eps)
         return self.E_S0 * (Bs - 1.0) + self.E_C0 * (Bc - 1.0)
 
-    # ---- 碎片总能（随形变）----
-    def fragment_energy(self, eps=None):
-        """形变 ε 下的碎片总能 = 液滴(球) + 形变能 + 壳 + 对（MeV）。"""
+    # ---- 碎片总能（随形变、温度）----
+    def fragment_energy(self, eps=None, T=0.0, T_d_sh=1.2, T_d_pair=0.5):
+        """形变 ε、温度 T 下的碎片总能 = 液滴(球) + 形变能 + 壳(T) + 对(T)（MeV）。
+
+        T=0 为原始壳/对修正；T>0 时壳修正与对修正按高斯阻尼 exp(−(T/T_d)²)
+        衰减（有限温度下量子壳效应被热涨落洗掉）。壳修正阻尼尺度 T_d_sh≈1.2 MeV
+        （≈ħω0/2π）、对修正 T_d_pair≈0.5 MeV（≈0.57Δ）。
+        """
         dE_sh, dE_pair = self.quantum_components(eps)
+        if T > 0.0:
+            dE_sh = dE_sh * np.exp(-(T / T_d_sh) ** 2)
+            dE_pair = dE_pair * np.exp(-(T / T_d_pair) ** 2)
         return (self.liquid_drop_bulk() + self.liquid_drop_deformation(eps)
                 + dE_sh + dE_pair)
 
@@ -127,3 +135,16 @@ class Fragment:
     def ground_state_energy(self, eps_list=(0.0, 0.1, 0.2, 0.3, 0.4)):
         """基态能（MeV）。"""
         return self.ground_state(eps_list)[0]
+
+    def equilibrium_eps(self, eps_list=(0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4)):
+        """平衡四极形变 ε_eq = argmin(形变能 + 壳修正)（MeV）。
+
+        断裂点碎片弛豫到平衡形变时，壳修正取 ε_eq 而非行走当前 ε。刻意不含
+        对修正：奇数核 BCS 对修正当前有奇偶 bug（量级 −15 MeV），会把 ε_eq 拉偏。
+        """
+        best, best_e = np.inf, 0.0
+        for eps in eps_list:
+            E = self.liquid_drop_deformation(eps) + self.shell_correction(eps)
+            if E < best:
+                best, best_e = E, eps
+        return float(best_e)

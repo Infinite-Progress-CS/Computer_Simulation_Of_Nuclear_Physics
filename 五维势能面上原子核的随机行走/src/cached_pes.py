@@ -62,7 +62,9 @@ class CachedMacroMicro(MacroMicro):
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "cache")
         Nmax = kw.get("Nmax", 12)
-        dname = f"quantum_Z{Z}_N{N}_Nmax{Nmax}_g{self.gamma:.2f}_p{self.p}"
+        shape_name = type(self.shape).__name__
+        dname = (f"quantum_Z{Z}_N{N}_Nmax{Nmax}_g{self.gamma:.2f}_p{self.p}"
+                 f"_lsp{self.lam_so_p}_lsn{self.lam_so_n}_{shape_name}")
         self._disk = DiskCache(os.path.join(cache_dir, dname))
         self._n_hit = 0
         self._n_miss = 0

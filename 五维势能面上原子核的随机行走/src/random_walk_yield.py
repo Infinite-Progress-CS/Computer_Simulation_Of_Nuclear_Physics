@@ -47,19 +47,19 @@ def quadrupole_moment(q, shape, n=300):
     """
     z, rho = shape.profile(q, n=n)   # fm
     integrand = z ** 2 * rho ** 2 - rho ** 4 / 4.0
-    return float(2.0 * np.pi * np.trapz(integrand, z))
+    trapz = getattr(np, 'trapezoid', np.trapz)  # numpy 1.x 用 trapz，2.x 用 trapezoid
+    return float(2.0 * np.pi * trapz(integrand, z))
 
 
 def local_temperature(V_rel, E_star, A):
-    """局域核温度 T = √(max(0, E* − V_rel)/aA)，V_rel 相对基态（MeV）。
+    """核温度 T = √(max(0, E* - V_rel)/aA)，aA=A/(8 MeV)。
 
-    aA = A/(8 MeV)。返回 MeV。
+    Randrup-Moller PRL 106,132503 (2011) 的形状依赖温度是
+        T^2 = (E* - V_rel)/aA，
+    因此 V_rel 接近 E* 时温度趋近 0。V_rel 为相对基态势能。
     """
     aA = A / 8.0
-    dE = E_star - V_rel
-    if dE <= 0.0:
-        return 0.0
-    return float(np.sqrt(dE / aA))
+    return float(np.sqrt(max(0.0, E_star - V_rel) / aA))
 
 
 def find_ground_state(pes, elong_lims=(0.3, 1.0), n_elong=8, necks=(0.9, 0.99),
@@ -91,10 +91,12 @@ def _propose(q, rng, step, q_min, q_max):
 
 
 def brownian_yield(pes, shape, A_parent=236, Z_parent=92, E_star=6.54,
-                   V0=60.0, c0=2.5, n_walks=200, max_steps=600,
+                   V0=15.0, c0=2.5, n_walks=200, max_steps=600,
                    q0=None, q_min=None, q_max=None,
                    step=np.array([0.05, 0.04, 0.03, 0.03, 0.03]),
-                   seed=0, verbose=False):
+                   n_eta_sub=0, seed=0, verbose=False,
+                   record_trajectory=False, record_max_walks=200,
+                   geom=None):
     """Brownian 形状运动产额：N 条行走 → 断裂点 η 直方图。
 
     返回 dict：
@@ -108,12 +110,39 @@ def brownian_yield(pes, shape, A_parent=236, Z_parent=92, E_star=6.54,
       E_star : 复合核激发能（MeV）。U-236 热中子 = 6.54（RMS Fig.1c）
       V0     : 偏置势强度（MeV）。RMS 2011 用 15，2015 用 60（差异不显著）
       c0     : 断裂颈半径（fm）。RMS 用 2.5，结果对其不敏感
+      geom   : GeometryTable（可选）。提供时 Q/颈半径走插值（零 least_squares，
+               单 walk 快 ~50×）；None 时用 shape.build 直接算。
     """
     rng = np.random.default_rng(seed)
     if q_min is None:
         q_min = np.array([0.2, 0.05, -0.5, -0.2, -0.2])
     if q_max is None:
         q_max = np.array([3.2, 0.99, 0.5, 0.4, 0.4])
+
+    # 几何量查询（geom 提供时走插值，否则走 shape.build）
+    def q_moment(q):
+        if geom is not None:
+            return geom.quadrupole(q)
+        try:
+            return quadrupole_moment(q, shape)
+        except Exception:
+            return np.nan
+
+    def q_valid(q):
+        if geom is not None:
+            return geom.is_valid(q)
+        try:
+            return shape.is_valid(q)
+        except Exception:
+            return False
+
+    def n_radius(q):
+        if geom is not None:
+            return geom.neck_radius(q)
+        try:
+            return neck_radius_fm(q, shape)
+        except Exception:
+            return np.nan
 
     # 基态（起点 + 能量基准）
     if q0 is None:
@@ -122,7 +151,7 @@ def brownian_yield(pes, shape, A_parent=236, Z_parent=92, E_star=6.54,
         q0 = np.asarray(q0, dtype=float)
         V_gs = pes.energy(q0)
     E0 = E_star + V_gs               # 相对球液滴基准的总激发
-    Q0 = max(quadrupole_moment(q0, shape), 1e-3)
+    Q0 = max(q_moment(q0), 1e-3)
     Q_floor = max(Q0 * 0.3, 1e-3)    # 防止 Q→0 时偏置发散
 
     A_edges = np.arange(0.5, A_parent + 0.5, 1.0)   # 0..A_parent 整数边界
@@ -133,26 +162,42 @@ def brownian_yield(pes, shape, A_parent=236, Z_parent=92, E_star=6.54,
     n_accept = 0
     n_evals = 0
 
+    # ---- 可选：记录每次行走的逐步轨迹，供后续多轨迹采样/拟合 ----
+    n_record = min(n_walks, record_max_walks) if record_trajectory else 0
+    traj = np.full((n_record, max_steps + 1, 5), np.nan) if n_record else None
+    traj_E = np.full((n_record, max_steps + 1), np.nan) if n_record else None
+    traj_steps = np.zeros(n_record, dtype=int) if n_record else None
+    traj_scission = np.zeros(n_record, dtype=bool) if n_record else None
+
     for w in range(n_walks):
         q = q0.copy()
         V = pes.energy(q)
-        Vb = V0 * (Q0 / max(quadrupole_moment(q, shape), Q_floor)) ** 2
+        Vb = V0 * (Q0 / max(q_moment(q), Q_floor)) ** 2
+        if record_trajectory and w < n_record:
+            traj[w, 0] = q
+            traj_E[w, 0] = V
         for s in range(max_steps):
             q_new = _propose(q, rng, step, q_min, q_max)
-            try:
-                V_new = pes.energy(q_new)
-            except Exception:
-                # 3QS 非对称形状在小 elong（碎片未分离）无解 → 退回对称投影
-                # （保留 elong/neck，η=ε1=ε2=0）再试；仍无解才拒绝。
-                q_sym = q_new.copy()
-                q_sym[2:] = 0.0
-                try:
-                    V_new = pes.energy(q_sym)
-                    q_new = q_sym
-                except Exception:
-                    V_new = np.inf
+            # 形状有效性 + 逐级对称投影。3QS 非对称形状（η≠0 或 ε1≠ε2）在碎片未分离
+            # （厚颈/短 elong）时无解，而 PES 表对无效点插值返回有限值、不抛异常，故
+            # 不能用 pes.energy 判有效性——改用 quadrupole_moment（内部 shape.build）。
+            # 投影顺序：原提案 → 退 η=0（保留 ε1,ε2）→ ε 对称 ε1=ε2=ε̄ → 全 0。
+            # 「退 η=0 保留 ε」关键：直接清 ε 会压低四极矩、抬升偏置 Vb∝(Q0/Q)²，冻结行走。
+            Q_new = None
+            e_avg = 0.5 * (q_new[3] + q_new[4])
+            for cand in (q_new,
+                         np.array([q_new[0], q_new[1], 0.0, q_new[3], q_new[4]]),
+                         np.array([q_new[0], q_new[1], 0.0, e_avg, e_avg]),
+                         np.array([q_new[0], q_new[1], 0.0, 0.0, 0.0])):
+                if q_valid(cand):
+                    Q_new = q_moment(cand)
+                    V_new = pes.energy(cand)
+                    q_new = cand
+                    break
+            if Q_new is None or not np.isfinite(V_new):
+                V_new = np.inf
             if V_new < np.inf:
-                Vb_new = V0 * (Q0 / max(quadrupole_moment(q_new, shape), Q_floor)) ** 2
+                Vb_new = V0 * (Q0 / max(Q_new, Q_floor)) ** 2
                 dE = (V_new + Vb_new) - (V + Vb)
                 T = local_temperature(V - V_gs, E_star, A_parent)
                 if dE <= 0.0 or rng.random() < np.exp(-dE / max(T, 1e-6)):
@@ -160,22 +205,67 @@ def brownian_yield(pes, shape, A_parent=236, Z_parent=92, E_star=6.54,
                     n_accept += 1
                 n_evals += 1
 
-            # 断裂判据
-            if neck_radius_fm(q, shape) <= c0:
+            # η 子步（时间尺度分离：η 弛豫快于形状演化，每步做多次 η-only Metropolis）。
+            # η-only 移动近似不改变四极矩 Q（偏置势 Vb=V0(Q0/Q)² 对 η 近似不变），故只比较
+            # V_eta - V。但 3QS 非对称形状在碎片未分离（厚颈/短 elong）时无解，而 PES 表
+            # 插值对这些点仍返回有限值——必须 shape.build 校验有效性，否则行走会接受无效
+            # 非对称态、随后 neck_radius_fm 崩溃。厚颈区 η 被几何冻结（|η| 上限≈0），
+            # 先每形状步探测一次 η 是否激活（小 η 探针 build），冻结则跳过全部子步，
+            # 省掉大量 least_squares 失败的昂贵开销。
+            eta_active = False
+            if n_eta_sub > 0:
+                eta_active = q_valid([q[0], q[1], 0.1, q[3], q[4]])
+            for _ in range(n_eta_sub):
+                if not eta_active:
+                    break
+                eta_new = float(np.clip(q[2] + step[2] * rng.standard_normal(),
+                                        q_min[2], q_max[2]))
+                if abs(eta_new - q[2]) < 1e-12:
+                    continue
+                q_eta = q.copy()
+                q_eta[2] = eta_new
+                if q_valid(q_eta):
+                    V_eta = pes.energy(q_eta)
+                else:
+                    V_eta = np.inf
+                if V_eta < np.inf:
+                    dE = V_eta - V
+                    T = local_temperature(V - V_gs, E_star, A_parent)
+                    if dE <= 0.0 or rng.random() < np.exp(-dE / max(T, 1e-6)):
+                        q, V = q_eta, V_eta
+                        n_accept += 1
+                    n_evals += 1
+
+            if record_trajectory and w < n_record:
+                traj[w, s + 1] = q
+                traj_E[w, s + 1] = V
+
+            # 断裂判据（无效形状视为未断裂，防御性兜底）
+            r_neck = n_radius(q)
+            if not np.isfinite(r_neck):
+                r_neck = np.inf
+            if r_neck <= c0:
                 eta = float(q[2])
                 A_L = A_parent * (1.0 - abs(eta)) / 2.0
                 # 两个碎片各计 1（A_L 与 A_H = A_parent − A_L）
-                iL = int(np.floor(A_L))
+                iL = int(round(A_L))
+                iH = A_parent - iL
                 if 0 <= iL < A_parent:
                     hist[iL] += 1.0
-                    hist[A_parent - 1 - iL] += 1.0
+                if 0 <= iH < A_parent:
+                    hist[iH] += 1.0
                 eta_scission.append(eta)
                 n_scission += 1
+                if record_trajectory and w < n_record:
+                    traj_steps[w] = s + 1
+                    traj_scission[w] = True
                 if verbose:
                     print(f"  [walk {w}/{n_walks}] 断裂 step={s}  η={eta:+.3f}  "
                           f"A_L={A_L:.0f}", flush=True)
                 break
         else:
+            if record_trajectory and w < n_record:
+                traj_steps[w] = max_steps
             if verbose:
                 print(f"  [walk {w}/{n_walks}] 未断裂 末 elong={q[0]:.2f} "
                       f"neck={q[1]:.2f} η={q[2]:+.2f}", flush=True)
@@ -186,9 +276,15 @@ def brownian_yield(pes, shape, A_parent=236, Z_parent=92, E_star=6.54,
     Y_A = 200.0 * hist / total if total > 0 else hist
 
     A = np.arange(A_parent, dtype=float)   # 0..235（碎片质量数）
-    return dict(A=A, Y_A=Y_A, eta_scission=np.asarray(eta_scission),
-                n_scission=n_scission, acceptance=acceptance,
-                V_gs=V_gs, q0=q0)
+    out = dict(A=A, Y_A=Y_A, eta_scission=np.asarray(eta_scission),
+               n_scission=n_scission, acceptance=acceptance,
+               V_gs=V_gs, q0=q0)
+    if record_trajectory:
+        out.update(trajectories=traj,
+                   trajectory_energy=traj_E,
+                   trajectory_steps=traj_steps,
+                   trajectory_scission=traj_scission)
+    return out
 
 
 def mass_to_charge_yield(A, Y_A, Z_parent=92, A_parent=236):

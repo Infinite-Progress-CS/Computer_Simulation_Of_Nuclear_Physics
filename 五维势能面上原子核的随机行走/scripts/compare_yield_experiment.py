@@ -68,6 +68,19 @@ def symmetrize(A, Y, A_parent=236):
     return Y0
 
 
+def gaussian_smooth_mass(A, Y, sigma):
+    """高斯质量弥散 Y_s(A) = Σ Y(A') G(A−A';σ)/Σ G（平滑壳修正奇偶锯齿）。
+
+    电荷弥散 σ_Z 平滑 Y(Z) 的奇偶锯齿；质量弥散 σ_A 是其在质量产额上的类比，
+    物理上对应碎片发射中子 ~ν 个的质量展宽（σ_A≈√ν≈1.0~1.4）。
+    """
+    if sigma <= 0:
+        return Y
+    g = np.exp(-(A[:, None] - A[None, :]) ** 2 / (2 * sigma ** 2))
+    Ys = g @ Y
+    return Ys / g.sum(axis=1)
+
+
 def peak_valley(A, Y):
     """返回 (轻峰A, 轻峰Y, 重峰A, 重峰Y, 谷A, 谷Y)。"""
     light = A < 120
@@ -85,6 +98,8 @@ def main():
     ap.add_argument('--T', type=float, default=None,
                     help='计算温度，加载 computed_mass_yield_T{T}.csv（默认自动选最新）')
     ap.add_argument('--calc', type=str, default=None, help='显式指定计算产额 CSV 路径')
+    ap.add_argument('--sigma-mass', type=float, default=0.0,
+                    help='对计算质量产额做高斯质量弥散 σ_A（平滑奇偶锯齿），默认 0=不弥散')
     ap.add_argument('--no-plot', action='store_true')
     args = ap.parse_args()
 
@@ -94,19 +109,23 @@ def main():
     elif args.T is not None:
         calc_path = os.path.join(DATA_DIR, f'computed_mass_yield_T{args.T:.1f}.csv')
     else:
-        # 自动选最新的 computed_mass_yield_T*.csv
-        cands = sorted([f for f in os.listdir(DATA_DIR)
-                        if f.startswith('computed_mass_yield_T') and f.endswith('.csv')])
+        # 自动选最新的 computed_mass_yield_T*.csv（按修改时间，非字典序）
+        cands = [f for f in os.listdir(DATA_DIR)
+                 if f.startswith('computed_mass_yield_T') and f.endswith('.csv')]
         if not cands:
             sys.exit('找不到 computed_mass_yield_T*.csv，请先跑 calc_fragment_yield.py')
+        cands.sort(key=lambda f: os.path.getmtime(os.path.join(DATA_DIR, f)))
         calc_path = os.path.join(DATA_DIR, cands[-1])
-        print(f'自动选择计算文件：{cands[-1]}')
+        print(f'自动选择计算文件：{cands[-1]}（按修改时间最新）')
     for p in (exp_path, calc_path):
         if not os.path.exists(p):
             sys.exit(f'缺少输入文件 {p}，请先跑 calc_fragment_yield.py')
 
     A_exp, Y_exp = load_csv(exp_path, 'A', 'mass_chain_yield_percent')
     A_calc, Y_calc = load_csv(calc_path, 'A', 'mass_yield_percent')
+    if args.sigma_mass > 0:
+        Y_calc = gaussian_smooth_mass(A_calc, Y_calc, args.sigma_mass)
+        print(f'对计算产额做高斯质量弥散 σ_A={args.sigma_mass}')
 
     # 发射中子后（原始）与发射前（对称化）两套实验口径
     Y_exp_sym = symmetrize(A_exp, Y_exp)
@@ -191,6 +210,9 @@ def main():
                 fontsize=9, color='tab:blue', arrowprops=dict(arrowstyle='-', color='tab:blue', lw=0.6))
     ax.annotate(f'对称谷 A={pc[4]}', (pc[4], pc[5]), xytext=(pc[4] - 30, pc[5] * 6),
                 fontsize=9, color='tab:red', arrowprops=dict(arrowstyle='-', color='tab:red', lw=0.6))
+    ax.text(0.98, 0.96, f'峰谷比 = {ratio_calc:.0f}   (实验对称化 {ratio_sym:.0f})',
+            transform=ax.transAxes, ha='right', va='top', fontsize=10,
+            bbox=dict(boxstyle='round', fc='lightyellow', ec='gray', alpha=0.9))
     ax.set_xlabel('A（质量数）')
     ax.set_ylabel('Y(A)（%）')
     ax.set_title('U-236 裂变碎片质量产额分布：断裂点模型 vs 实验')

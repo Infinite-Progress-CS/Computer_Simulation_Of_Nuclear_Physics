@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-run_walk_yield_hybrid.py — 5D Brownian 形状运动产额（断裂区双中心壳修正）
-====================================================================
-用 HybridMacroMicro PES + Randrup-Möller 偏置势（V_bias=V0(Q0/Q)²）做 5D
-随机行走产额。偏置势沿四极矩方向把核从基态推向断裂，突破局部 Metropolis 行走
-卡在连通对称形状（假 +17 MeV 内势垒）的鸡生蛋问题。
+run_walk_yield_funnyhills.py — Funny-Hills 平滑剖面 5D Brownian 形状运动产额
+============================================================================
+用 ShapeFunnyHills（四阶剖面，无 3QS 圆柱假脊）+ HybridMacroMicro（统一非正交
+双中心移位谐振子 Woods-Saxon 基，球→鞍点→双碎片平滑描述）+ Randrup-Möller 偏置势
+做 5D 随机行走产额。
 
-断裂点冻结 η → 质量产额 Y(A)；电荷产额 Y(Z) 用 UCD 标度。
+与 run_walk_yield_hybrid.py 的区别：形状从 Shape3QS 换成 ShapeFunnyHills，且壳修正
+从「满核单中心 + 碎片级插值切换」换成统一双中心基（颈方向无假势垒、鞍点 η 非对称
+偏好显著增强）。
 
-输出：results/随机行走/walk_yield_hybrid.npz + csv。
+输出：results/随机行走/walk_yield_funnyhills_*.npz + csv + png。
 """
 import os
 import sys
@@ -22,7 +24,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
 
 from hybrid_pes import CachedHybridMacroMicro
 from random_walk_yield import brownian_yield, quadrupole_moment, find_ground_state
-from shape import Shape3QS
+from shape import ShapeFunnyHills
 
 Z, N = 92, 144   # U-236
 
@@ -49,14 +51,27 @@ def main():
     ap.add_argument('--max-steps', type=int, default=400)
     ap.add_argument('--step-elong', type=float, default=0.05)
     ap.add_argument('--step-neck', type=float, default=0.04)
-    ap.add_argument('--step-eta', type=float, default=0.03)
-    ap.add_argument('--step-eps', type=float, default=0.03)
+    ap.add_argument('--step-eta', type=float, default=0.05)
+    ap.add_argument('--step-eps', type=float, default=0.0)
+    ap.add_argument('--n-eta-sub', type=int, default=0,
+                    help='每步的 η-only Metropolis 子步数（时间尺度分离，η 弛豫快于形状）')
     ap.add_argument('--E-star', type=float, default=6.54)
-    ap.add_argument('--V0', type=float, default=15.0)
+    ap.add_argument('--V0', type=float, default=60.0)
     ap.add_argument('--c0', type=float, default=2.5)
+    ap.add_argument('--Nmax', type=int, default=12)
+    ap.add_argument('--neck-hi', type=float, default=0.7)
+    ap.add_argument('--neck-lo', type=float, default=0.6)
+    ap.add_argument('--r-hi', type=float, default=None,
+                    help='物理颈半径切换上阈值(fm)；与 --r-lo 同设则启用伸长感知切换')
+    ap.add_argument('--r-lo', type=float, default=None,
+                    help='物理颈半径切换下阈值(fm)')
+    ap.add_argument('--lam-so-p', type=float, default=None,
+                    help='质子自旋轨道强度（None=标准 WS 值 35；双中心基不再需要 28 削弱 hack）')
+    ap.add_argument('--eps-scission', type=str, default='0.4,0.6',
+                    help='断裂点碎片固定形变 (ε_轻, ε_重)')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--q0', type=str, default=None,
-                    help='逗号分隔的起点 q=[elong,neck,eta,eps1,eps2]，默认自动找基态')
+                    help='逗号分隔起点 q=[elong,neck,eta,eps1,eps2]，默认自动找基态')
     ap.add_argument('--no-plot', action='store_true')
     args = ap.parse_args()
 
@@ -64,16 +79,19 @@ def main():
                      args.step_eps, args.step_eps])
 
     print("=" * 70)
-    print("5D Brownian 形状运动产额（断裂区双中心壳修正 + RMS 偏置势）")
+    print("5D Brownian 形状运动产额（Funny-Hills 平滑剖面 + 双中心壳修正 + RMS 偏置势）")
     print("=" * 70)
 
+    eps_scission = tuple(float(x) for x in args.eps_scission.split(','))
     pes = CachedHybridMacroMicro(Z, N, nz=40, nrho=40, nsurf=48, nphi=32,
-                                 Nmax=12, shape_cls=Shape3QS, lam_so_p=None)
-    print(f"  R0={pes.R0:.3f} fm   γ={pes.gamma:.2f} MeV   "
-          f"3QS + 双中心 WS 基 (lam_so_p={pes.lam_so_p})")
+                                 Nmax=args.Nmax, neck_hi=args.neck_hi,
+                                 neck_lo=args.neck_lo, r_hi=args.r_hi, r_lo=args.r_lo,
+                                 shape_cls=ShapeFunnyHills,
+                                 lam_so_p=args.lam_so_p, eps_scission=eps_scission)
+    print(f"  R0={pes.R0:.3f} fm   γ={pes.gamma:.2f} MeV   双中心 WS 基 "
+          f"(lam_so_p={args.lam_so_p})")
     shape = pes.shape
 
-    # 起点 + 基态
     if args.q0 is not None:
         q0 = np.array([float(x) for x in args.q0.split(',')])
         V_gs = pes.energy(q0)
@@ -91,7 +109,7 @@ def main():
     res = brownian_yield(
         pes, shape, A_parent=236, Z_parent=92, E_star=args.E_star,
         V0=args.V0, c0=args.c0, n_walks=args.n_walks, max_steps=args.max_steps,
-        q0=q0, step=step, seed=args.seed, verbose=True)
+        q0=q0, step=step, n_eta_sub=args.n_eta_sub, seed=args.seed, verbose=True)
     dt = time.time() - t0
 
     eta = res["eta_scission"]
@@ -119,17 +137,17 @@ def main():
     out = os.path.join(PROJECT_ROOT, "results", "随机行走")
     os.makedirs(out, exist_ok=True)
     tag = f"nw{args.n_walks}_ms{args.max_steps}_s{args.seed}"
-    np.savez(os.path.join(out, f"walk_yield_hybrid_{tag}.npz"),
+    np.savez(os.path.join(out, f"walk_yield_funnyhills_{tag}.npz"),
              A=res["A"], Y_A=res["Y_A"], eta_scission=eta,
              n_scission=n_sc, acceptance=res["acceptance"],
              V_gs=V_gs, q0=q0, Q0=Q0)
-    with open(os.path.join(out, f"walk_yield_hybrid_{tag}.csv"), "w",
+    with open(os.path.join(out, f"walk_yield_funnyhills_{tag}.csv"), "w",
               encoding="utf-8-sig") as f:
         f.write("A,mass_yield_percent\n")
         for a, y in zip(res["A"], res["Y_A"]):
             if y > 0:
                 f.write(f"{int(a)},{y:.6f}\n")
-    print(f"\n已保存 results/随机行走/walk_yield_hybrid_{tag}.npz / .csv")
+    print(f"\n已保存 results/随机行走/walk_yield_funnyhills_{tag}.npz / .csv")
 
     if not args.no_plot:
         import matplotlib
@@ -143,16 +161,16 @@ def main():
         axes[0].plot([pk['A_light'], pk['A_heavy']],
                      [pk['Y_light'], pk['Y_heavy']], 'v', ms=9, color='tab:red')
         axes[0].set_ylabel('Y(A) (%)')
-        axes[0].set_title('Brownian 行走质量产额（双中心壳修正）')
+        axes[0].set_title('Brownian 行走质量产额（Funny-Hills）')
         axes[0].grid(alpha=0.3)
         axes[1].semilogy(A, np.clip(Y, 1e-6, None), '-', lw=2, color='tab:blue')
         axes[1].set_xlabel('A (mass number)')
         axes[1].set_ylabel('Y(A) (%) (log)')
         axes[1].grid(alpha=0.3, which='both')
         fig.tight_layout()
-        fig.savefig(os.path.join(out, f"walk_yield_hybrid_{tag}.png"), dpi=160)
+        fig.savefig(os.path.join(out, f"walk_yield_funnyhills_{tag}.png"), dpi=160)
         plt.close(fig)
-        print(f"图已保存 results/随机行走/walk_yield_hybrid_{tag}.png")
+        print(f"图已保存 results/随机行走/walk_yield_funnyhills_{tag}.png")
 
 
 if __name__ == "__main__":

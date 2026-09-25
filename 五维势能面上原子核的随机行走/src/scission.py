@@ -57,7 +57,31 @@ def scission_distance_deformed(A_L, A_H, eps_L, eps_H, r0=1.16, d_extra=2.0):
     return R0_L * (1.0 + 2.0 * eps_L / 3.0) + R0_H * (1.0 + 2.0 * eps_H / 3.0) + d_extra
 
 
-def scission_energy_fixed_eps(frag_L, frag_H, eps, d_extra=2.0):
+def scission_energy_fixed_deformed(frag_L, frag_H, eps_L, eps_H, d_extra=2.0,
+                                   T=0.0, T_d_sh=1.2, T_d_pair=0.5):
+    """固定断裂形变 (ε_L, ε_H) 下的断裂点势能 V_scission（MeV）。
+
+    物理断裂点：碎片被库仑拉伸到固定的断裂形变（重碎片 ε_H≈0.6、轻碎片 ε_L≈0.4），
+    球形幻数被洗掉、变形壳决定峰位。与 scission_energy()（自由基态极小化）的区别是
+    碎片不松弛到各自基态 ε，而是取断裂点拉伸形变（非绝热）。
+
+    ε 按质量分配：轻碎片（小 A）取 ε_L、重碎片（大 A）取 ε_H，保证 A_L↔A_H 交换对称。
+    T>0 时壳修正与对修正按温度阻尼（见 fragment_energy）。
+    """
+    Z_L, Z_H = frag_L.Z, frag_H.Z
+    A_L, A_H = frag_L.A, frag_H.A
+    if A_L <= A_H:
+        e_L_actual, e_H_actual = eps_L, eps_H
+    else:
+        e_L_actual, e_H_actual = eps_H, eps_L
+    d = scission_distance_deformed(A_L, A_H, e_L_actual, e_H_actual, d_extra=d_extra)
+    return (frag_L.fragment_energy(e_L_actual, T=T, T_d_sh=T_d_sh, T_d_pair=T_d_pair)
+            + frag_H.fragment_energy(e_H_actual, T=T, T_d_sh=T_d_sh, T_d_pair=T_d_pair)
+            + coulomb_mutual(Z_L, Z_H, d))
+
+
+def scission_energy_fixed_eps(frag_L, frag_H, eps, d_extra=2.0, T=0.0,
+                              T_d_sh=1.2, T_d_pair=0.5):
     """固定形变 ε（两碎片同 ε）下的断裂点势能 V_scission（MeV）。
 
     与 scission_energy() 的区别：碎片不在各自形变基态，而是取断裂点拉伸形变 ε，
@@ -66,8 +90,8 @@ def scission_energy_fixed_eps(frag_L, frag_H, eps, d_extra=2.0):
     Z_L, Z_H = frag_L.Z, frag_H.Z
     A_L, A_H = frag_L.A, frag_H.A
     d = scission_distance_deformed(A_L, A_H, eps, eps, d_extra=d_extra)
-    E_L = frag_L.fragment_energy(eps)
-    E_H = frag_H.fragment_energy(eps)
+    E_L = frag_L.fragment_energy(eps, T=T, T_d_sh=T_d_sh, T_d_pair=T_d_pair)
+    E_H = frag_H.fragment_energy(eps, T=T, T_d_sh=T_d_sh, T_d_pair=T_d_pair)
     return E_L + E_H + coulomb_mutual(Z_L, Z_H, d)
 
 

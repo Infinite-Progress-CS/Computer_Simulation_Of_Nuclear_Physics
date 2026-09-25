@@ -22,7 +22,8 @@ class FRLDMPES:
     """
 
     def __init__(self, Z, N, r0=1.16, a_s=21.18466, kappa_s=2.345, a_range=0.68,
-                 nz=48, nrho=48, nsurf=56, nphi=36, richardson=True):
+                 nz=48, nrho=48, nsurf=56, nphi=36, richardson=True,
+                 shape_cls=Shape3QS, sphere_q=None):
         self.Z, self.N = Z, N
         self.A = Z + N
         self.R0 = r0 * self.A ** (1.0 / 3.0)
@@ -30,11 +31,17 @@ class FRLDMPES:
         self.E_S0 = a_s * (1.0 - kappa_s * I ** 2) * self.A ** (2.0 / 3.0)
         self.E_C0 = (3.0 / 5.0) * Z * Z * 1.44 / self.R0
         self.a = a_range / self.R0          # 无量纲有限力程
-        self.shape = Shape3QS(self.R0)
+        self.shape = shape_cls(self.R0)
         self.nz, self.nrho = nz, nrho       # 库仑积分网格（细）
         self.nsurf, self.nphi = nsurf, nphi  # 表面能积分网格
         self.richardson = richardson
-        self._sphere = self.shape.build([0.0, 0.0, 0.0, 0.0, 0.0])
+        # 单位球参考形状（B_s、B_c 的分母）。3QS 的球是近球极限
+        # (elong=0, neck=0, η=0, ε1=ε2=0)（build 里 elong<1e-6 且 η=ε=0 时
+        # 直接返回 ρ²=1−z²）；Funny-Hills 的球是 (elong=0, neck=1)（n=1 → ρ²=1−z²）。
+        # 默认球形状由 shape_cls.SPHERE_Q 提供（neck=0 对 Funny-Hills 是「花生」）。
+        if sphere_q is None:
+            sphere_q = getattr(shape_cls, 'SPHERE_Q', [0.0, 0.0, 0.0, 0.0, 0.0])
+        self._sphere = self.shape.build(sphere_q)
         self.I_C_sphere = self._coulomb_I_conv(self._sphere)
         self.I_S_sphere = self._surface_I(self._sphere)
 
@@ -122,7 +129,8 @@ class FRLDMPES:
             cosD = np.cos(Delta[k])
             s2 = zz ** 2 + rho1 ** 2 + rho2_ ** 2 - 2.0 * r1r2 * cosD
             s = np.sqrt(np.maximum(s2, 1e-24))
-            K = (2.0 - (2.0 + s / a) * np.exp(-s / a)) / np.maximum(s2 ** 2, 1e-24)
+            x = s / a
+            K = (2.0 - (x * x + 2.0 * x + 2.0) * np.exp(-x)) / np.maximum(s2 ** 2, 1e-24)
             dot1 = rho1 - rho2_ * cosD - zz * rp1
             dot2 = rho1 * cosD - rho2_ - zz * rp2
             total += wD[k] * np.sum(wz_full[:, None] * wz_full[None, :]

@@ -111,6 +111,91 @@ def spherical_single_particle_levels(Z, N, params=None, Rmax=20.0, h=0.02,
 
 
 # ======================================================================
+# 形状表面几何 / 势场（WoodsSaxon 与 TwoCenterWoodsSaxon 共享）
+# ======================================================================
+
+def seg_dist(zp, rp, z1, r1, z2, r2):
+    """点到线段 [P1,P2] 的距离（fm）。"""
+    dzs = z2 - z1
+    drs = r2 - r1
+    L2 = dzs * dzs + drs * drs
+    tt = ((zp - z1) * dzs + (rp - r1) * drs) / np.maximum(L2, 1e-30)
+    tt = np.clip(tt, 0.0, 1.0)
+    zc = z1 + tt * dzs
+    rc = r1 + tt * drs
+    return np.sqrt((zp - zc) ** 2 + (rp - rc) ** 2)
+
+
+def signed_distance(shape, rho_p, z_p, q, nsurf=600):
+    """到 shape 表面多段线的带符号距离（核内负、外正）。rho_p/z_p 为展平的一维坐标。"""
+    zs, rs = shape.profile(q, n=nsurf)
+    dz = z_p[:, None] - zs[None, :]
+    dr = rho_p[:, None] - rs[None, :]
+    d2 = dz * dz + dr * dr
+    k0 = np.argmin(d2, axis=1)
+    n = nsurf
+    kA = np.clip(k0 - 1, 0, n - 1)
+    kB = np.clip(k0, 0, n - 1)
+    kC = np.clip(k0 + 1, 0, n - 1)
+    dA = seg_dist(z_p, rho_p, zs[kA], rs[kA], zs[kB], rs[kB])
+    dB = seg_dist(z_p, rho_p, zs[kB], rs[kB], zs[kC], rs[kC])
+    d = np.minimum(dA, dB)
+    rho_surf = np.interp(z_p, zs, rs, left=rs[0], right=rs[-1])
+    sign = np.where(rho_p < rho_surf, -1.0, 1.0)
+    return sign * d
+
+
+def potential_fields(shape, z_p, rho_p, q, a, V0, kappa, I, Z, R_c,
+                     grad_step=0.15, nsurf=600):
+    """在 (z_p, rho_p) 二维网格上计算 Woods-Saxon 中心势 + 自旋轨道所需梯度场。
+
+    返回 dict(Vn, Vp, dVn_drho, dVn_dz, dVp_drho, dVp_dz, Vn_rr, Vp_rr)。
+    z_p/rho_p 为同形 (nz, nrho) 网格（fm）。梯度用带符号距离中心差分，
+    与核子种类无关（只差 fac_n/fac_p 系数），故只算一次。
+    """
+    d = signed_distance(shape, rho_p.ravel(), z_p.ravel(), q, nsurf).reshape(z_p.shape)
+
+    fac_n = V0 * (1.0 - kappa * I)
+    fac_p = V0 * (1.0 + kappa * I)
+    f = _spherical_fermi(d / a)
+    Vn = -fac_n * f
+    Vp = -fac_p * f
+
+    r = np.sqrt(rho_p ** 2 + z_p ** 2)
+    Vcoul = np.where(r <= R_c,
+                     (Z - 1) * E2 * (3.0 - (r / R_c) ** 2) / (2.0 * R_c),
+                     (Z - 1) * E2 / r)
+    Vp = Vp + Vcoul
+
+    gs = grad_step
+    rho_plus = rho_p + gs
+    rho_minus = np.abs(rho_p - gs)   # 偶对称反射处理 ρ−gs<0
+    z_plus = z_p + gs
+    z_minus = z_p - gs
+
+    dp = signed_distance(shape, rho_plus.ravel(), z_p.ravel(), q, nsurf).reshape(z_p.shape)
+    dm = signed_distance(shape, rho_minus.ravel(), z_p.ravel(), q, nsurf).reshape(z_p.shape)
+    zp_d = signed_distance(shape, rho_p.ravel(), z_plus.ravel(), q, nsurf).reshape(z_p.shape)
+    zm_d = signed_distance(shape, rho_p.ravel(), z_minus.ravel(), q, nsurf).reshape(z_p.shape)
+    fp = _spherical_fermi(dp / a)
+    fm = _spherical_fermi(dm / a)
+    fzp = _spherical_fermi(zp_d / a)
+    fzm = _spherical_fermi(zm_d / a)
+
+    dVn_drho = -fac_n * (fp - fm) / (2.0 * gs)
+    dVn_dz = -fac_n * (fzp - fzm) / (2.0 * gs)
+    dVp_drho = -fac_p * (fp - fm) / (2.0 * gs)
+    dVp_dz = -fac_p * (fzp - fzm) / (2.0 * gs)
+
+    Vn_rr = dVn_drho / np.maximum(rho_p, 1e-12)
+    Vp_rr = dVp_drho / np.maximum(rho_p, 1e-12)
+
+    return dict(Vn=Vn, Vp=Vp, dVn_drho=dVn_drho, dVn_dz=dVn_dz,
+                dVp_drho=dVp_drho, dVp_dz=dVp_dz,
+                Vn_rr=Vn_rr, Vp_rr=Vp_rr)
+
+
+# ======================================================================
 # 变形 Woods-Saxon（轴向谐振子基对角化）
 # ======================================================================
 
@@ -124,7 +209,7 @@ class WoodsSaxon:
     """
 
     def __init__(self, Z, N, Nmax=12, nz_gauss=40, nrho_gauss=32, nsurf=600,
-                 grad_step=0.15, params=None, shape=None):
+                 grad_step=0.15, params=None, shape=None, shape_cls=Shape3QS):
         self.Z, self.N = Z, N
         self.A = Z + N
         self.I = (N - Z) / self.A
@@ -147,7 +232,7 @@ class WoodsSaxon:
         self.hbar_omega = 41.0 / self.A ** (1.0 / 3.0)   # MeV
         self.b = math.sqrt(HBARC ** 2 / (M_NUC * self.hbar_omega))  # fm
 
-        self.shape = shape if shape is not None else Shape3QS(self.R_ws)
+        self.shape = shape if shape is not None else shape_cls(self.R_ws)
 
         # 谐振子基的（Ω,π）块标签：预生成 Ω 列表
         self._omega_list = [i + 0.5 for i in range(Nmax + 1)]  # 1/2,3/2,...,Nmax+1/2
@@ -216,100 +301,17 @@ class WoodsSaxon:
             D[nr] = np.sqrt(t) * (-P[nr] + 2.0 * dPdt)
         return P, D
 
-    # ---- 带符号距离（到 3QS 表面多段线，含分段精化）----
-    def _surface(self, q):
-        z, rho = self.shape.profile(q, n=self.nsurf)
-        return z, rho
-
-    def _signed_distance(self, rho_p, z_p, q):
-        zs, rs = self._surface(q)
-        dz = z_p[:, None] - zs[None, :]
-        dr = rho_p[:, None] - rs[None, :]
-        d2 = dz * dz + dr * dr
-        k0 = np.argmin(d2, axis=1)
-        n = self.nsurf
-        kA = np.clip(k0 - 1, 0, n - 1)
-        kB = np.clip(k0, 0, n - 1)
-        kC = np.clip(k0 + 1, 0, n - 1)
-        dA = self._seg_dist(z_p, rho_p, zs[kA], rs[kA], zs[kB], rs[kB])
-        dB = self._seg_dist(z_p, rho_p, zs[kB], rs[kB], zs[kC], rs[kC])
-        d = np.minimum(dA, dB)
-        # 符号：核内（ρ_p < ρ(z_p)）为负
-        rho_surf = np.interp(z_p, zs, rs, left=rs[0], right=rs[-1])
-        sign = np.where(rho_p < rho_surf, -1.0, 1.0)
-        return sign * d
-
-    @staticmethod
-    def _seg_dist(zp, rp, z1, r1, z2, r2):
-        dzs = z2 - z1
-        drs = r2 - r1
-        L2 = dzs * dzs + drs * drs
-        tt = ((zp - z1) * dzs + (rp - r1) * drs) / np.maximum(L2, 1e-30)
-        tt = np.clip(tt, 0.0, 1.0)
-        zc = z1 + tt * dzs
-        rc = r1 + tt * drs
-        return np.sqrt((zp - zc) ** 2 + (rp - rc) ** 2)
-
     # ---- 势场（中心势 + 梯度，在 Gauss 节点上）----
     def _potential_fields(self, q):
-        zs, rs = self._surface(q)
         xi = self.xi
         t = self.t
         z = self.b * xi[:, None]            # (nz,1) fm
         rho = self.b * np.sqrt(t)[None, :]  # (1,nrho) fm
         rho_p = np.broadcast_to(rho, (len(xi), len(t)))
         z_p = np.broadcast_to(z, (len(xi), len(t)))
-        # 展平求距离
-        d = self._signed_distance(rho_p.ravel(), z_p.ravel(), q).reshape(rho_p.shape)
-
-        I = self.I
-        fac_n = self.V0 * (1.0 - self.kappa * I)
-        fac_p = self.V0 * (1.0 + self.kappa * I)
-        f = _spherical_fermi(d / self.a)
-        Vn = -fac_n * f
-        Vp = -fac_p * f
-
-        # 质子库仑（均匀带电球）
-        r = np.sqrt(rho ** 2 + z ** 2)
-        Vcoul = np.where(r <= self.R_c,
-                         (self.Z - 1) * E2 * (3.0 - (r / self.R_c) ** 2) / (2.0 * self.R_c),
-                         (self.Z - 1) * E2 / r)
-        Vp = Vp + Vcoul
-
-        # 梯度：对 Vn、Vp 分别做中心差分
-        gs = self.grad_step
-        rho_plus = np.broadcast_to(rho + gs, rho_p.shape)
-        rho_minus = np.broadcast_to(np.abs(rho - gs), rho_p.shape)
-
-        def grad(V):
-            # 直接对 V(ρ,z) 有限差分（中心差分，利用 V 偶对称反射处理 ρ−gs<0）
-            dp = self._signed_distance(rho_plus.ravel(), z_p.ravel(), q).reshape(rho_p.shape)
-            dm = self._signed_distance(rho_minus.ravel(), z_p.ravel(), q).reshape(rho_p.shape)
-            zp_d = self._signed_distance(rho_p.ravel(), (z_p + gs).ravel(), q).reshape(rho_p.shape)
-            zm_d = self._signed_distance(rho_p.ravel(), (z_p - gs).ravel(), q).reshape(rho_p.shape)
-            fp = _spherical_fermi(dp / self.a)
-            fm = _spherical_fermi(dm / self.a)
-            fzp = _spherical_fermi(zp_d / self.a)
-            fzm = _spherical_fermi(zm_d / self.a)
-            return fp, fm, fzp, fzm
-
-        # 中子
-        fpn, fmn, fzpn, fzmn = grad(Vn)
-        dVn_drho = -fac_n * (fpn - fmn) / (2.0 * gs)
-        dVn_dz = -fac_n * (fzpn - fzmn) / (2.0 * gs)
-        # 质子（中心势梯度，仅核部分——自旋轨道只取核梯度，库仑中心势单独加在 Vp 上）
-        fpp, fmp, fzpp, fzmp = grad(Vp)
-        dVp_drho = -fac_p * (fpp - fmp) / (2.0 * gs)
-        dVp_dz = -fac_p * (fzpp - fzmp) / (2.0 * gs)
-
-        # 自旋轨道对角项 ⟨(1/r)dV/dr⟩ = ⟨(1/ρ)∂V/∂ρ⟩：除以 ρ（= b√t）。
-        # 数值校验（_test_soratio.py）：/ρ 与 dblquad 精确值一致（1.000），/√t 偏大 b 倍。
-        Vn_rr = dVn_drho / np.maximum(rho, 1e-12)
-        Vp_rr = dVp_drho / np.maximum(rho, 1e-12)
-
-        return dict(Vn=Vn, Vp=Vp, dVn_drho=dVn_drho, dVn_dz=dVn_dz,
-                    dVp_drho=dVp_drho, dVp_dz=dVp_dz,
-                    Vn_rr=Vn_rr, Vp_rr=Vp_rr)
+        return potential_fields(self.shape, z_p, rho_p, q, self.a, self.V0,
+                                self.kappa, self.I, self.Z, self.R_c,
+                                grad_step=self.grad_step, nsurf=self.nsurf)
 
     # ---- 组装并对角化一个 (Ω, π) 块 ----
     def _solve_block(self, Omega, parity, fields, Vr, Vz, Vrr, S):
